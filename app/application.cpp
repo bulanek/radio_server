@@ -152,23 +152,17 @@ void tcpServerClientComplete(TcpClient& client, bool succesfull) {
 	debugf("Application CompleteCallback : %s \r\n", client.getRemoteIp().toString().c_str());
 }
 
-// Will be called when WiFi station was connected to AP
-void connectOk() {
-	debugf("I'm CONNECTED");
-	Serial.println(WifiStation.getIP().toString());
-	Serial.println("I'm CONNECTED");
-	f_Server.listen(80);
-	f_Server.setTimeOut(0xFFFF);
-}
-
-
-
 
 ////////////////////////////////////////////////////////////////////////////////
 // Will be called when WiFi station was connected to AP
 void gotIP(IPAddress, IPAddress, IPAddress)
 {
-	Serial.println("I'm CONNECTED");
+	debugf("I'm CONNECTED");
+	Serial.println(WifiStation.getIP().toString());
+	f_Server.listen(80);
+	f_Server.setTimeOut(0xFFFF);
+
+
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -187,6 +181,7 @@ void ready(void) {
 		digitalWrite(PINS[i], 0);
 	}
 	pinMode(PINS[CONFIG], INPUT_PULLUP);
+    debugf("State of config pin: %i", digitalRead(PINS[CONFIG]));
 	readConfigStations();
 	configStations();
 }
@@ -205,25 +200,40 @@ void readConfigStations(void) {
         if (status < 0) debugf("Read config failed, %d\n", status);
     }
 }
+void UartDelegate(Stream &source, char arrivedChar, uint16_t availableCharsCount)
+{
+    debugf("Arrived char: %c\n",arrivedChar);
+}
+
 
 void configStations(void) {
+    debugf("config pin: %i\n", digitalRead(PINS[CONFIG]));
     if (digitalRead(PINS[CONFIG]) != 0) return;
     String configFile(CONFIG_FILE);
-    if (!fileExist(configFile)) return;
     Serial.println("Write stations from the first to the last");
     Serial.println("In case of last station written, type -q or ");
     String station;
     Serial.print( "Station 1: ");
     g_StationsConfig.m_numStations = 0;
-    while((station = Serial.readStringUntil('\n')) != String("-q")) {
-        g_StationsConfig.m_stations[g_StationsConfig.m_numStations++] = station;
-        if (g_StationsConfig.m_numStations >= MAX_STATIONS) {
-            Serial.printf("Max number of stations (%d) reached\n", MAX_STATIONS);
-            break;
-        }
-        Serial.printf("Station %d: ", g_StationsConfig.m_numStations + 1);
-    }
+    Serial.setTimeout(50);
+ //   while((station = Serial.readString()) != String("-q")) {
+//        g_StationsConfig.m_stations[g_StationsConfig.m_numStations++] = station;
+ //       if (g_StationsConfig.m_numStations >= MAX_STATIONS) {
+ //           Serial.printf("Max number of stations (%d) reached\n", MAX_STATIONS);
+  //          break;
+  //      }
+   //     Serial.printf("Station %d: ", g_StationsConfig.m_numStations + 1);
+    //}
+    Serial.setTimeout(500); // set the timeout to 500 ms...
+    Serial.printf( "after serial read, data: %s\n ",data.c_str());
+
+    debugf("Rx enabled: %i\n", Serial.isRxEnabled());
+    Serial.setCallback(UartDelegate);
+
+
 }
+
+
 
 void init(void) {
 	// Initialize wifi connection
