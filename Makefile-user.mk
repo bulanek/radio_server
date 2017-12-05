@@ -36,5 +36,5 @@ SPI_SIZE = 4M
 
 ## SPIFFS options
 DISABLE_SPIFFS = 0
-# SPIFF_FILES = files
+SPIFF_FILES = files
 

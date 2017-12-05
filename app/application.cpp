@@ -10,7 +10,6 @@
 #define WIFI_SSID "Tenda_5EE5C0" // Put you SSID and Password here
 #define WIFI_PWD "pandapanda"
 #define IP_ADDRESS "192.168.1.172"
-
 #define CONFIG_FILE "stations_config.txt"
 
 // CONSTANTS
@@ -27,15 +26,12 @@ typedef struct {
 } StationsConfig;
 
 static StationsConfig g_StationsConfig = {0};
-//    .m_stations = STATIONS,
-//    .m_numStations = NUM_STATIONS,
-//    .m_currentStation = 0,
-//};
+
 
 /// File desc with config of stations and current station as well
 file_t g_File;
 
-// PARAMENTERS
+// PARAMETERS
 
 enum Event {
 	PLAY = 0,
@@ -54,6 +50,8 @@ const uint16_t PINS[] = {
 // True in case of playing.
 bool f_IsOn = false;
 
+String g_UartOutputStation;
+uint8_t g_UartCurrentStation = 1;
 
 void SetPinTimeoutUs(uint16_t pin, uint32_t timeoutUs = 100000) {
 	debugf("Pin %i toggle\n", pin);
@@ -61,11 +59,15 @@ void SetPinTimeoutUs(uint16_t pin, uint32_t timeoutUs = 100000) {
 	delayMicroseconds(timeoutUs);
 	digitalWrite(pin, 0);
 }
+
 void readConfigStations(void);
 void configStations(void);
 void playFunc(TcpClient& client);
 void previousFunc(TcpClient& client);
 void nextFunc(TcpClient& client);
+
+/// Callback called while received byte by uart
+void uartDelegate(Stream &source, char arrivedChar, uint16_t availableCharsCount);
 
 void tcpServerClientConnected(TcpClient* client);
 bool tcpServerClientReceive(TcpClient& client, char *data, int size);
@@ -74,77 +76,88 @@ void tcpServerClientComplete(TcpClient& client, bool succesfull);
 TcpServer f_Server(tcpServerClientConnected, tcpServerClientReceive, tcpServerClientComplete);
 
 void tcpServerClientConnected(TcpClient* client) {
-	debugf("Application onClientCallback : %s\r\n",
-			client->getRemoteIp().toString().c_str());
+	debugf("Application onClientCallback : %s\r\n", client->getRemoteIp().toString().c_str());
 }
 
 bool tcpServerClientReceive(TcpClient& client, char *data, int size) {
-	debugf("Application DataCallback : %s, %d bytes, data: %s \r\n",
-			client.getRemoteIp().toString().c_str(), size, data);
-	// One byte information
-	if (size == 2) {
-		char dataInput = data[0];
-		uint8_t value = atoi(&dataInput);
-        switch (value) {
-        case PLAY:
-            Serial.println("Play request received.");
-            playFunc(client);
-            break;
-        case PREVIOUS_STATION:
-            Serial.println("Previous station request received.");
-            previousFunc(client);
-            break;
-        case NEXT_STATION:
-            Serial.println("Next station request received.");
-            nextFunc(client);
-            break;
-        default:
-            debugf("Unexpected data: %s\n", data);
-            return false;
-        }
-	} else {
-		debugf("Unexpected data length, %i\n", size);
+	debugf("Application DataCallback : %s, %d bytes, data: %s \r\n", client.getRemoteIp().toString().c_str(), size, data);
+	if (size != 2) {
+        debugf("Unexpected data length, %i\n", size);
 		return false;
 	}
+
+    char dataInput = data[0];
+    uint8_t value = atoi(&dataInput);
+    switch (value) {
+    case PLAY:
+        Serial.println("Play request received.");
+        playFunc(client);
+        break;
+    case PREVIOUS_STATION:
+        Serial.println("Previous station request received.");
+        previousFunc(client);
+        break;
+    case NEXT_STATION:
+        Serial.println("Next station request received.");
+        nextFunc(client);
+        break;
+    default:
+        debugf("Unexpected data: %s\n", data);
+        return false;
+    }
 	return true;
 }
 
 void playFunc(TcpClient& client) {
     SetPinTimeoutUs(PINS[PLAY]);
     f_IsOn = not (f_IsOn);
-    if (f_IsOn) {
-        client.sendString(g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]);
-    }
+    if (f_IsOn) client.sendString(g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]);
 }
 
 void previousFunc(TcpClient& client) {
-    if ((g_StationsConfig.m_currentStation > 0) && f_IsOn) {
+    if (!f_IsOn) {client.sendString("Turn on radio!"); return;}
+
+    if (g_StationsConfig.m_currentStation > 0) {
         --g_StationsConfig.m_currentStation;
         SetPinTimeoutUs(PINS[PREVIOUS_STATION]);
         client.sendString(g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]);
         fileWrite(g_File, (const void*)&g_StationsConfig, sizeof(g_StationsConfig));
     } else {
-        if (f_IsOn) {
-            client.sendString(
-                    "Cannot set previous station, already on the first one");
-        } else {
-            client.sendString("Turn on radio!");
-        }
+        client.sendString("Cannot set previous station, already on the first one");
     }
 }
 
 void nextFunc(TcpClient& client) {
-    if ((g_StationsConfig.m_currentStation < (g_StationsConfig.m_numStations - 1)) && f_IsOn) {
+    if (!f_IsOn) {client.sendString("Turn on radio!"); return;}
+
+    if (g_StationsConfig.m_currentStation < (g_StationsConfig.m_numStations - 1)) {
         ++g_StationsConfig.m_currentStation;
         SetPinTimeoutUs(PINS[NEXT_STATION]);
         client.sendString(g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]);
         fileWrite(g_File, (const void*) &g_StationsConfig, sizeof(g_StationsConfig));
     } else {
-        if (f_IsOn) {
-            client.sendString("Cannot set next station, already on the last one");
-        } else {
-            client.sendString("Turn on radio!");
+        client.sendString("Cannot set next station, already on the last one");
+    }
+}
+
+void uartDelegate(Stream &source, char arrivedChar, uint16_t availableCharsCount) {
+    if (arrivedChar != '\r') {
+        g_UartOutputStation += arrivedChar;
+        Serial.print(arrivedChar);
+    } else {
+        if (g_UartOutputStation== String("-q")){
+            fileWrite(g_File, (const void*) &g_StationsConfig, sizeof(g_StationsConfig));
+            fileClose(g_File);
+            spiffs_unmount();
+            return;
         }
+        Serial.printf("\n\rStation selected: %s\n\r", g_UartOutputStation.c_str());
+        g_StationsConfig.m_stations[g_UartCurrentStation] = g_UartOutputStation;
+        g_StationsConfig.m_numStations = g_UartCurrentStation;
+        ++g_UartCurrentStation;
+        if (g_UartCurrentStation >= MAX_STATIONS) return;
+        Serial.printf("\n\rStation %i: ", g_UartCurrentStation);
+        g_UartOutputStation.setString("");
     }
 }
 
@@ -152,28 +165,22 @@ void tcpServerClientComplete(TcpClient& client, bool succesfull) {
 	debugf("Application CompleteCallback : %s \r\n", client.getRemoteIp().toString().c_str());
 }
 
-
-////////////////////////////////////////////////////////////////////////////////
-// Will be called when WiFi station was connected to AP
-void gotIP(IPAddress, IPAddress, IPAddress)
-{
-	debugf("I'm CONNECTED");
-	Serial.println(WifiStation.getIP().toString());
+void gotIP(IPAddress ip, IPAddress mask, IPAddress gateway) {
+	debugf("Connected: ip (%s), mask(%s), gateway(%s)\n",
+	        ip.toString().c_str(), mask.toString().c_str(), gateway.toString().c_str());
 	f_Server.listen(80);
 	f_Server.setTimeOut(0xFFFF);
-
+	readConfigStations();
+	configStations();
 
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Will be called when WiFi station timeout was reached
-void connectFail(String, uint8_t, uint8_t[6], uint8_t)
-{
-	Serial.println("I'm NOT CONNECTED. Need help :(");
+void disconnect(String ssid, uint8_t ssid_len, uint8_t bssid[6], uint8_t reason) {
+	Serial.printf("Disconnected: SSID : %s, reason: %i\n", ssid.c_str(), reason);
 }
 
-// Will be called when WiFi hardware and software initialization was finished
-// And system initialization was completed
+/// Will be called when WiFi hardware and software initialization was finished
+/// And system initialization was completed
 void ready(void) {
 	debugf("READY!");
 	for (uint8_t i = 0; i < 3; ++i) {
@@ -182,70 +189,58 @@ void ready(void) {
 	}
 	pinMode(PINS[CONFIG], INPUT_PULLUP);
     debugf("State of config pin: %i", digitalRead(PINS[CONFIG]));
-	readConfigStations();
-	configStations();
 }
 
 void readConfigStations(void) {
     String configFile(CONFIG_FILE);
     // first time write config
     size_t status;
+//    spiffs_mount();
     if (!fileExist(configFile)) {
+        Serial.printf("File %s doesn't exist\r\n", configFile.c_str());
         g_File = fileOpen( configFile, eFO_WriteOnly);
         status = fileWrite(g_File,(const void*) &g_StationsConfig, sizeof(g_StationsConfig));
         if (status < 0) debugf("Write config failed, %d\n", status);
     } else {
+        Serial.printf("File %s exists\r\n", configFile.c_str());
         g_File = fileOpen(configFile, eFO_ReadWrite);
         status = fileRead(g_File, (void *) &g_StationsConfig, sizeof(g_StationsConfig));
         if (status < 0) debugf("Read config failed, %d\n", status);
     }
-}
-void UartDelegate(Stream &source, char arrivedChar, uint16_t availableCharsCount)
-{
-    debugf("Arrived char: %c\n",arrivedChar);
-}
+//    spiffs_unmount();
+    Serial.println("\rStations configured: ");
+    for (int i = 0; i < g_StationsConfig.m_numStations; ++i)
+    {
+        Serial.printf("\tStation %i: %s\r\n",i + 1, g_StationsConfig.m_stations[i].c_str());
+    }
 
+}
 
 void configStations(void) {
-    debugf("config pin: %i\n", digitalRead(PINS[CONFIG]));
     if (digitalRead(PINS[CONFIG]) != 0) return;
-    String configFile(CONFIG_FILE);
-    Serial.println("Write stations from the first to the last");
-    Serial.println("In case of last station written, type -q or ");
-    String station;
-    Serial.print( "Station 1: ");
+    // To pass all callbacks
     g_StationsConfig.m_numStations = 0;
-    Serial.setTimeout(50);
- //   while((station = Serial.readString()) != String("-q")) {
-//        g_StationsConfig.m_stations[g_StationsConfig.m_numStations++] = station;
- //       if (g_StationsConfig.m_numStations >= MAX_STATIONS) {
- //           Serial.printf("Max number of stations (%d) reached\n", MAX_STATIONS);
-  //          break;
-  //      }
-   //     Serial.printf("Station %d: ", g_StationsConfig.m_numStations + 1);
-    //}
-    Serial.setTimeout(500); // set the timeout to 500 ms...
-    Serial.printf( "after serial read, data: %s\n ",data.c_str());
-
-    debugf("Rx enabled: %i\n", Serial.isRxEnabled());
-    Serial.setCallback(UartDelegate);
-
-
+    Serial.printf("Station %i: ", g_UartCurrentStation);
 }
 
-
-
 void init(void) {
+    spiffs_mount();
+    Vector<String> filelist = fileList();
+
+       Serial.println(" ")  ;
+       Serial.println("Spiffs file system contents ");
+       for ( int i = 0 ; i < filelist.count() ; i++ ) {
+           Serial.print(" ");
+           Serial.println(filelist.get(i) + " (" + String( fileGetSize(filelist.get(i))) + ")"     );
+       }
 	// Initialize wifi connection
-    for (int i = 0; i < NUM_STATIONS; ++i) {
-        g_StationsConfig.m_stations[i] = String(STATIONS[i]);
-    }
+    for (int i = 0; i < NUM_STATIONS; ++i) g_StationsConfig.m_stations[i] = String(STATIONS[i]);
     g_StationsConfig.m_numStations = NUM_STATIONS;
     g_StationsConfig.m_currentStation = 0;
 
 	Serial.begin(SERIAL_BAUD_RATE);
 	Serial.systemDebugOutput(true); // Allow debug print to serial
-	Serial.println("Sming. Let's do smart things!");
+    Serial.setCallback(uartDelegate);
 
 	// Set system ready callback method
 	System.onReady(ready);
@@ -261,5 +256,5 @@ void init(void) {
 	// We recommend 20+ seconds at start
 
     WifiEvents.onStationGotIP(gotIP);
-    WifiEvents.onStationDisconnect(connectFail);
+    WifiEvents.onStationDisconnect(disconnect);
 }
