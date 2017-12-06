@@ -19,10 +19,13 @@ const uint8_t NUM_STATIONS = sizeof(STATIONS) / sizeof(char*);
 
 #define MAX_STATIONS 20
 
+#define DATA_SECTOR 0x3D000
+#define DATA_SEC_KB 0x3D
+
 typedef struct {
-    String m_stations[MAX_STATIONS];
     uint8_t m_numStations;
     uint8_t m_currentStation;
+    String m_stations[MAX_STATIONS];
 } StationsConfig;
 
 static StationsConfig g_StationsConfig = {0};
@@ -146,9 +149,15 @@ void uartDelegate(Stream &source, char arrivedChar, uint16_t availableCharsCount
         Serial.print(arrivedChar);
     } else {
         if (g_UartOutputStation== String("-q")){
+            SpiFlashOpResult result = spi_flash_erase_sector( DATA_SECTOR / SPI_FLASH_SEC_SIZE);
+            if (result != SPI_FLASH_RESULT_OK) Serial.printf("Erase failed: %i\n\r", result);
+            spi_flash_write(DATA_SECTOR, (uint32_t*)&g_StationsConfig, 4);
+            Serial.println("Write flash");
+            Serial.printf("Num stations: %i\r\n", g_StationsConfig.m_numStations);
+            Serial.printf("current station: %i\r\n", g_StationsConfig.m_currentStation);
+
             fileWrite(g_File, (const void*) &g_StationsConfig, sizeof(g_StationsConfig));
             fileClose(g_File);
-            spiffs_unmount();
             return;
         }
         Serial.printf("\n\rStation selected: %s\n\r", g_UartOutputStation.c_str());
@@ -166,13 +175,11 @@ void tcpServerClientComplete(TcpClient& client, bool succesfull) {
 }
 
 void gotIP(IPAddress ip, IPAddress mask, IPAddress gateway) {
-	debugf("Connected: ip (%s), mask(%s), gateway(%s)\n",
-	        ip.toString().c_str(), mask.toString().c_str(), gateway.toString().c_str());
+	debugf("Connected: ip (%s), mask(%s), gateway(%s)\n", ip.toString().c_str(), mask.toString().c_str(), gateway.toString().c_str());
 	f_Server.listen(80);
 	f_Server.setTimeOut(0xFFFF);
 	readConfigStations();
 	configStations();
-
 }
 
 void disconnect(String ssid, uint8_t ssid_len, uint8_t bssid[6], uint8_t reason) {
@@ -195,7 +202,12 @@ void readConfigStations(void) {
     String configFile(CONFIG_FILE);
     // first time write config
     size_t status;
-//    spiffs_mount();
+
+    StationsConfig configTmp;
+    SpiFlashOpResult readResult =spi_flash_read(DATA_SECTOR, (uint32_t*)&configTmp, 4);
+    if (readResult != SPI_FLASH_RESULT_OK) Serial.printf("Read flash failed, %i\r\n", readResult);
+    Serial.printf("Num stations: %i\r\n", configTmp.m_numStations);
+    Serial.printf("current station: %i\r\n", configTmp.m_currentStation);
     if (!fileExist(configFile)) {
         Serial.printf("File %s doesn't exist\r\n", configFile.c_str());
         g_File = fileOpen( configFile, eFO_WriteOnly);
@@ -207,13 +219,11 @@ void readConfigStations(void) {
         status = fileRead(g_File, (void *) &g_StationsConfig, sizeof(g_StationsConfig));
         if (status < 0) debugf("Read config failed, %d\n", status);
     }
-//    spiffs_unmount();
     Serial.println("\rStations configured: ");
     for (int i = 0; i < g_StationsConfig.m_numStations; ++i)
     {
         Serial.printf("\tStation %i: %s\r\n",i + 1, g_StationsConfig.m_stations[i].c_str());
     }
-
 }
 
 void configStations(void) {
@@ -224,15 +234,13 @@ void configStations(void) {
 }
 
 void init(void) {
-    spiffs_mount();
-    Vector<String> filelist = fileList();
-
-       Serial.println(" ")  ;
-       Serial.println("Spiffs file system contents ");
-       for ( int i = 0 ; i < filelist.count() ; i++ ) {
-           Serial.print(" ");
-           Serial.println(filelist.get(i) + " (" + String( fileGetSize(filelist.get(i))) + ")"     );
-       }
+//    Vector<String> filelist = fileList();
+//       Serial.println(" ")  ;
+//       Serial.println("Spiffs file system contents ");
+//       for ( int i = 0 ; i < filelist.count() ; i++ ) {
+//           Serial.print(" ");
+//           Serial.println(filelist.get(i) + " (" + String( fileGetSize(filelist.get(i))) + ")"     );
+//       }
 	// Initialize wifi connection
     for (int i = 0; i < NUM_STATIONS; ++i) g_StationsConfig.m_stations[i] = String(STATIONS[i]);
     g_StationsConfig.m_numStations = NUM_STATIONS;
