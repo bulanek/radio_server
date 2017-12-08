@@ -19,8 +19,8 @@ const uint8_t NUM_STATIONS = sizeof(STATIONS) / sizeof(char*);
 
 #define MAX_STATIONS 20
 
-#define DATA_SECTOR 0x3D000
-#define DATA_SEC_KB 0x3D
+#define DATA_SECTOR 0x3f000
+#define DATA_SEC_KB 0x3f
 
 typedef struct {
     uint8_t m_numStations;
@@ -149,15 +149,13 @@ void uartDelegate(Stream &source, char arrivedChar, uint16_t availableCharsCount
         Serial.print(arrivedChar);
     } else {
         if (g_UartOutputStation== String("-q")){
-            SpiFlashOpResult result = spi_flash_erase_sector( DATA_SECTOR / SPI_FLASH_SEC_SIZE);
-            if (result != SPI_FLASH_RESULT_OK) Serial.printf("Erase failed: %i\n\r", result);
+            spi_flash_erase_sector(DATA_SEC_KB);
             spi_flash_write(DATA_SECTOR, (uint32_t*)&g_StationsConfig, 4);
             Serial.println("Write flash");
             Serial.printf("Num stations: %i\r\n", g_StationsConfig.m_numStations);
             Serial.printf("current station: %i\r\n", g_StationsConfig.m_currentStation);
+            g_UartOutputStation = String("");
 
-            fileWrite(g_File, (const void*) &g_StationsConfig, sizeof(g_StationsConfig));
-            fileClose(g_File);
             return;
         }
         Serial.printf("\n\rStation selected: %s\n\r", g_UartOutputStation.c_str());
@@ -208,17 +206,7 @@ void readConfigStations(void) {
     if (readResult != SPI_FLASH_RESULT_OK) Serial.printf("Read flash failed, %i\r\n", readResult);
     Serial.printf("Num stations: %i\r\n", configTmp.m_numStations);
     Serial.printf("current station: %i\r\n", configTmp.m_currentStation);
-    if (!fileExist(configFile)) {
-        Serial.printf("File %s doesn't exist\r\n", configFile.c_str());
-        g_File = fileOpen( configFile, eFO_WriteOnly);
-        status = fileWrite(g_File,(const void*) &g_StationsConfig, sizeof(g_StationsConfig));
-        if (status < 0) debugf("Write config failed, %d\n", status);
-    } else {
-        Serial.printf("File %s exists\r\n", configFile.c_str());
-        g_File = fileOpen(configFile, eFO_ReadWrite);
-        status = fileRead(g_File, (void *) &g_StationsConfig, sizeof(g_StationsConfig));
-        if (status < 0) debugf("Read config failed, %d\n", status);
-    }
+
     Serial.println("\rStations configured: ");
     for (int i = 0; i < g_StationsConfig.m_numStations; ++i)
     {
