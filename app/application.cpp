@@ -16,16 +16,17 @@
 
 const char* STATIONS[] = {"Vltava", "Wave", "CRzurnal", "DDur", "CR2","JAZZ", "Junior", "Plus", "Regina", "Retro", "Sport"};
 const uint8_t NUM_STATIONS = sizeof(STATIONS) / sizeof(char*);
+const uint8_t STATION_BUFFER_SIZE = 20;
 
 #define MAX_STATIONS 20
 
-#define DATA_SECTOR 0x3f000
-#define DATA_SEC_KB 0x3f
+#define DATA_ADDRESS 0x3f000
+#define DATA_SECTOR 0x3f
 
 typedef struct {
     uint8_t m_numStations;
     uint8_t m_currentStation;
-    String m_stations[MAX_STATIONS];
+    char* m_stations[MAX_STATIONS][STATION_BUFFER_SIZE];
 } StationsConfig;
 
 static StationsConfig g_StationsConfig = {0};
@@ -54,7 +55,19 @@ const uint16_t PINS[] = {
 bool f_IsOn = false;
 
 String g_UartOutputStation;
-uint8_t g_UartCurrentStation = 1;
+uint8_t g_UartCurrentStation = 0;
+
+ICACHE_FLASH_ATTR void flash_erase_all() {
+    char settings[sizeof(StationsConfig)];
+    for (int n = 0; n < sizeof(StationsConfig); n++) settings[n] = 0;
+    spi_flash_erase_sector(DATA_SECTOR);
+}
+
+ICACHE_FLASH_ATTR void flash_write( const StationsConfig& stationsConfig) {
+    SpiFlashOpResult result = spi_flash_erase_sector(DATA_SECTOR);
+    if (result != SPI_FLASH_RESULT_OK) Serial.printf("Erase failed: %i\n\r", result);
+    spi_flash_write(DATA_ADDRESS, (uint32_t*)&stationsConfig, sizeof(StationsConfig));
+}
 
 void SetPinTimeoutUs(uint16_t pin, uint32_t timeoutUs = 100000) {
 	debugf("Pin %i toggle\n", pin);
@@ -63,8 +76,8 @@ void SetPinTimeoutUs(uint16_t pin, uint32_t timeoutUs = 100000) {
 	digitalWrite(pin, 0);
 }
 
-void readConfigStations(void);
-void configStations(void);
+void readSavedConfigStations(void);
+void configStationsUART(void);
 void playFunc(TcpClient& client);
 void previousFunc(TcpClient& client);
 void nextFunc(TcpClient& client);
@@ -114,7 +127,7 @@ bool tcpServerClientReceive(TcpClient& client, char *data, int size) {
 void playFunc(TcpClient& client) {
     SetPinTimeoutUs(PINS[PLAY]);
     f_IsOn = not (f_IsOn);
-    if (f_IsOn) client.sendString(g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]);
+    if (f_IsOn) client.sendString(String((const char*)g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]));
 }
 
 void previousFunc(TcpClient& client) {
@@ -123,7 +136,7 @@ void previousFunc(TcpClient& client) {
     if (g_StationsConfig.m_currentStation > 0) {
         --g_StationsConfig.m_currentStation;
         SetPinTimeoutUs(PINS[PREVIOUS_STATION]);
-        client.sendString(g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]);
+        client.sendString(String((const char*)g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]));
         fileWrite(g_File, (const void*)&g_StationsConfig, sizeof(g_StationsConfig));
     } else {
         client.sendString("Cannot set previous station, already on the first one");
@@ -136,34 +149,37 @@ void nextFunc(TcpClient& client) {
     if (g_StationsConfig.m_currentStation < (g_StationsConfig.m_numStations - 1)) {
         ++g_StationsConfig.m_currentStation;
         SetPinTimeoutUs(PINS[NEXT_STATION]);
-        client.sendString(g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]);
+        client.sendString(String((const char*)g_StationsConfig.m_stations[g_StationsConfig.m_currentStation]));
         fileWrite(g_File, (const void*) &g_StationsConfig, sizeof(g_StationsConfig));
     } else {
         client.sendString("Cannot set next station, already on the last one");
     }
 }
 
-void uartDelegate(Stream &source, char arrivedChar, uint16_t availableCharsCount) {
+void uartDelegate(Stream &source, char arrivedChar,
+        uint16_t availableCharsCount) {
+    // Type char
     if (arrivedChar != '\r') {
         g_UartOutputStation += arrivedChar;
         Serial.print(arrivedChar);
+    // exit
+    } else if (g_UartOutputStation == String("-q")) {
+        flash_erase_all();
+        flash_write(g_StationsConfig);
+        Serial.println("Write flash");
+        Serial.printf("Num stations: %i\r\n", g_StationsConfig.m_numStations);
+        Serial.printf("current station: %i\r\n", g_StationsConfig.m_currentStation);
+        g_UartOutputStation.setString("");
+        g_UartCurrentStation = 0;
+        return;
+    // Type enter
     } else {
-        if (g_UartOutputStation== String("-q")){
-            spi_flash_erase_sector(DATA_SEC_KB);
-            spi_flash_write(DATA_SECTOR, (uint32_t*)&g_StationsConfig, 4);
-            Serial.println("Write flash");
-            Serial.printf("Num stations: %i\r\n", g_StationsConfig.m_numStations);
-            Serial.printf("current station: %i\r\n", g_StationsConfig.m_currentStation);
-            g_UartOutputStation = String("");
-
-            return;
-        }
         Serial.printf("\n\rStation selected: %s\n\r", g_UartOutputStation.c_str());
-        g_StationsConfig.m_stations[g_UartCurrentStation] = g_UartOutputStation;
-        g_StationsConfig.m_numStations = g_UartCurrentStation;
-        ++g_UartCurrentStation;
+        memcpy((void*) g_StationsConfig.m_stations[g_UartCurrentStation], (void*) g_UartOutputStation.c_str(),
+                (size_t) g_UartOutputStation.length() + 1);
+        g_StationsConfig.m_numStations = ++g_UartCurrentStation;
         if (g_UartCurrentStation >= MAX_STATIONS) return;
-        Serial.printf("\n\rStation %i: ", g_UartCurrentStation);
+        Serial.printf("\n\rStation %i: ", g_UartCurrentStation + 1);
         g_UartOutputStation.setString("");
     }
 }
@@ -176,8 +192,8 @@ void gotIP(IPAddress ip, IPAddress mask, IPAddress gateway) {
 	debugf("Connected: ip (%s), mask(%s), gateway(%s)\n", ip.toString().c_str(), mask.toString().c_str(), gateway.toString().c_str());
 	f_Server.listen(80);
 	f_Server.setTimeOut(0xFFFF);
-	readConfigStations();
-	configStations();
+	readSavedConfigStations();
+	configStationsUART();
 }
 
 void disconnect(String ssid, uint8_t ssid_len, uint8_t bssid[6], uint8_t reason) {
@@ -196,41 +212,28 @@ void ready(void) {
     debugf("State of config pin: %i", digitalRead(PINS[CONFIG]));
 }
 
-void readConfigStations(void) {
-    String configFile(CONFIG_FILE);
-    // first time write config
-    size_t status;
-
+void readSavedConfigStations(void) {
     StationsConfig configTmp;
-    SpiFlashOpResult readResult =spi_flash_read(DATA_SECTOR, (uint32_t*)&configTmp, 4);
+    SpiFlashOpResult readResult = spi_flash_read(DATA_ADDRESS, (uint32_t*) &g_StationsConfig, sizeof(StationsConfig));
     if (readResult != SPI_FLASH_RESULT_OK) Serial.printf("Read flash failed, %i\r\n", readResult);
-    Serial.printf("Num stations: %i\r\n", configTmp.m_numStations);
-    Serial.printf("current station: %i\r\n", configTmp.m_currentStation);
+    if (g_StationsConfig.m_numStations >= MAX_STATIONS) g_StationsConfig.m_numStations = 0;
 
-    Serial.println("\rStations configured: ");
-    for (int i = 0; i < g_StationsConfig.m_numStations; ++i)
-    {
-        Serial.printf("\tStation %i: %s\r\n",i + 1, g_StationsConfig.m_stations[i].c_str());
+    Serial.println("\rSaved stations: ");
+    for (int i = 0; i < g_StationsConfig.m_numStations; ++i) {
+        Serial.printf("\tStation %i: %s\n\r", i + 1, g_StationsConfig.m_stations[i]);
     }
 }
 
-void configStations(void) {
+void configStationsUART(void) {
     if (digitalRead(PINS[CONFIG]) != 0) return;
     // To pass all callbacks
     g_StationsConfig.m_numStations = 0;
-    Serial.printf("Station %i: ", g_UartCurrentStation);
+    g_StationsConfig.m_currentStation = 0;
+    Serial.printf("\r\nStation 1: ");
 }
 
 void init(void) {
-//    Vector<String> filelist = fileList();
-//       Serial.println(" ")  ;
-//       Serial.println("Spiffs file system contents ");
-//       for ( int i = 0 ; i < filelist.count() ; i++ ) {
-//           Serial.print(" ");
-//           Serial.println(filelist.get(i) + " (" + String( fileGetSize(filelist.get(i))) + ")"     );
-//       }
-	// Initialize wifi connection
-    for (int i = 0; i < NUM_STATIONS; ++i) g_StationsConfig.m_stations[i] = String(STATIONS[i]);
+    for (int i = 0; i < NUM_STATIONS; ++i) memcpy((void*) g_StationsConfig.m_stations[i], STATIONS[i], strlen(STATIONS[i] + 1));
     g_StationsConfig.m_numStations = NUM_STATIONS;
     g_StationsConfig.m_currentStation = 0;
 
@@ -250,7 +253,6 @@ void init(void) {
 
 	// Run our method when station was connected to AP (or not connected)
 	// We recommend 20+ seconds at start
-
     WifiEvents.onStationGotIP(gotIP);
     WifiEvents.onStationDisconnect(disconnect);
 }
